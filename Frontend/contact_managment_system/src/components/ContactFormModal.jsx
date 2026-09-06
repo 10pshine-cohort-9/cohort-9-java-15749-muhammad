@@ -407,7 +407,9 @@ export const ContactFormModal = ({
       <div
         ref={modalRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={violationState.isOpen ? undefined : 'true'}
+        aria-hidden={violationState.isOpen ? 'true' : undefined}
+        inert={violationState.isOpen ? '' : undefined}
         aria-labelledby="contact-form-modal-title"
         className="modal-container"
         onClick={(e) => e?.stopPropagation()}

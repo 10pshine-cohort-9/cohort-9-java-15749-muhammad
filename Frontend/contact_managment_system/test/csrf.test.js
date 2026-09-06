@@ -236,6 +236,32 @@ describe('Authenticated Request Security (request)', () => {
     assert.equal(capturedHeaders?.Authorization, undefined);
   });
 
+  test('removes caller-supplied Authorization header over plaintext HTTP', async () => {
+    let capturedHeaders = null;
+    let capturedUrl = null;
+    globalThis.fetch = async (url, options) => {
+      capturedUrl = url;
+      capturedHeaders = options.headers;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ success: true, data: { ok: true } })
+      };
+    };
+
+    await request('/auth/phone', {
+      method: 'PUT',
+      baseUrl: 'http://localhost:8080/api',
+      headers: { Authorization: 'Bearer caller-secret-token' },
+      body: JSON.stringify({ phone: '+1234567890' })
+    });
+
+    assert.equal(capturedUrl, 'http://localhost:8080/api/auth/phone');
+    assert.equal(capturedHeaders?.Authorization, undefined);
+    assert.equal(capturedHeaders?.authorization, undefined);
+  });
+
   test('permits HTTPS origins and attaches cms_auth_token', async () => {
     safeStorage.setItem('cms_auth_token', 'remote-secret-token');
     let capturedHeaders = null;

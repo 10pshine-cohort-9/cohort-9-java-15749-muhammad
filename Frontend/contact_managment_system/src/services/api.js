@@ -338,6 +338,14 @@ export const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOU
     ...(fetchOptions.headers || {})
   };
 
+  if (isHttpProtocol) {
+    Object.keys(headers).forEach((key) => {
+      if (key.toLowerCase() === 'authorization') {
+        delete headers[key];
+      }
+    });
+  }
+
   if (callerSignal) {
     if (callerSignal.aborted) {
       controller.abort();
