@@ -409,7 +409,7 @@ export const ContactFormModal = ({
         role="dialog"
         aria-modal={violationState.isOpen ? undefined : 'true'}
         aria-hidden={violationState.isOpen ? 'true' : undefined}
-        inert={violationState.isOpen ? '' : undefined}
+        inert={violationState.isOpen}
         aria-labelledby="contact-form-modal-title"
         className="modal-container"
         onClick={(e) => e?.stopPropagation()}

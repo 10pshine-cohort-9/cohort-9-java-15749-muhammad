@@ -331,7 +331,7 @@ export const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOU
   const requestGeneration = getSessionGeneration();
   const { signal: callerSignal, baseUrl, ...fetchOptions } = options;
   const targetBaseUrl = typeof baseUrl === 'string' ? baseUrl : BASE_URL;
-  const targetUrl = `${targetBaseUrl}${endpoint}`;
+  const targetUrl = `${targetBaseUrl}${endpoint}`.trim();
 
   if (!isLocalOrSecureUrl(targetUrl)) {
     throw new Error('Insecure HTTP request to non-local origin rejected');

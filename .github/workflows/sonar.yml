@@ -22,7 +22,7 @@ jobs:
 
     env:
       SONAR_AVAILABLE: ${{ secrets.SONAR_TOKEN != '' }}
-      SONAR_HOST_IS_HTTPS: ${{ startsWith(secrets.SONAR_HOST_URL, 'https://') }}
+      SONAR_HOST_VALID: ${{ secrets.SONAR_HOST_URL == '' || startsWith(secrets.SONAR_HOST_URL, 'https://') }}
 
     defaults:
       run:
@@ -55,10 +55,10 @@ jobs:
           ./mvnw clean verify
 
       - name: SonarQube / SonarCloud Scan
-        if: env.SONAR_AVAILABLE == 'true' && env.SONAR_HOST_IS_HTTPS == 'true'
+        if: env.SONAR_AVAILABLE == 'true' && env.SONAR_HOST_VALID == 'true'
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL != '' && secrets.SONAR_HOST_URL || 'https://sonarcloud.io' }}
         run: |
           ./mvnw sonar:sonar \
             -Dsonar.projectKey=contact-management-system-backend \
@@ -75,7 +75,7 @@ jobs:
 
     env:
       SONAR_AVAILABLE: ${{ secrets.SONAR_TOKEN != '' }}
-      SONAR_HOST_IS_HTTPS: ${{ startsWith(secrets.SONAR_HOST_URL, 'https://') }}
+      SONAR_HOST_VALID: ${{ secrets.SONAR_HOST_URL == '' || startsWith(secrets.SONAR_HOST_URL, 'https://') }}
 
     defaults:
       run:
@@ -105,7 +105,7 @@ jobs:
         run: npm test
 
       - name: SonarQube / SonarCloud Scanner CLI Scan
-        if: env.SONAR_AVAILABLE == 'true' && env.SONAR_HOST_IS_HTTPS == 'true'
+        if: env.SONAR_AVAILABLE == 'true' && env.SONAR_HOST_VALID == 'true'
         uses: SonarSource/sonarqube-scan-action@689fb39b34b9aa95ebc5f8f119343ddd51542402 # v4.2.2
         with:
           projectBaseDir: Frontend/contact_managment_system

@@ -188,8 +188,8 @@ export const UserProfileModal = ({ isOpen, onClose, showToast, onAccountClosed }
             type="button"
             aria-label="Close profile"
             onClick={handleModalClose}
-            disabled={submitting}
-            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: submitting ? 'not-allowed' : 'pointer' }}
+            disabled={submitting || phoneSubmitting}
+            style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: (submitting || phoneSubmitting) ? 'not-allowed' : 'pointer' }}
           >
             <X size={20} />
           </button>
