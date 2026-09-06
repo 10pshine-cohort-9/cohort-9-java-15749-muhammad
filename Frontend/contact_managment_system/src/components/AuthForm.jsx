@@ -4,6 +4,11 @@ import { safeStorage } from '../utils/storage';
 import { ACCOUNT_CLOSED_NOTICE_KEY } from '../utils/duplicatePolicy';
 import { Mail, Phone, ArrowRight, Eye, EyeOff, ShieldCheck, AlertTriangle } from 'lucide-react';
 
+const REG_TABS = [
+  { type: 'email', label: 'Email', icon: Mail },
+  { type: 'phone', label: 'Phone', icon: Phone }
+];
+
 /**
  * Authentication form component handling user login and account registration with email/phone toggle.
  *
@@ -209,54 +214,36 @@ export const AuthForm = ({ showToast }) => {
                     borderRadius: 'var(--radius-md)'
                   }}
                 >
-                  <button
-                    type="button"
-                    aria-pressed={regType === 'email'}
-                    style={{
-                      flex: 1,
-                      padding: '0.5rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: regType === 'email' ? '1px solid rgba(255, 255, 255, 0.4)' : '1px solid transparent',
-                      background: regType === 'email' ? 'var(--accent-gradient)' : 'transparent',
-                      boxShadow: regType === 'email' ? '0 2px 10px rgba(185, 28, 28, 0.55), 0 0 8px rgba(255, 255, 255, 0.2)' : 'none',
-                      color: '#ffffff',
-                      cursor: 'pointer',
-                      fontWeight: '700',
-                      fontSize: '0.85rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '0.4rem',
-                      transition: 'var(--transition-fast)'
-                    }}
-                    onClick={() => setRegType('email')}
-                  >
-                    <Mail size={16} /> Email
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={regType === 'phone'}
-                    style={{
-                      flex: 1,
-                      padding: '0.5rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: regType === 'phone' ? '1px solid rgba(255, 255, 255, 0.4)' : '1px solid transparent',
-                      background: regType === 'phone' ? 'var(--accent-gradient)' : 'transparent',
-                      boxShadow: regType === 'phone' ? '0 2px 10px rgba(185, 28, 28, 0.55), 0 0 8px rgba(255, 255, 255, 0.2)' : 'none',
-                      color: '#ffffff',
-                      cursor: 'pointer',
-                      fontWeight: '700',
-                      fontSize: '0.85rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '0.4rem',
-                      transition: 'var(--transition-fast)'
-                    }}
-                    onClick={() => setRegType('phone')}
-                  >
-                    <Phone size={16} /> Phone
-                  </button>
+                  {REG_TABS.map(({ type, label, icon: Icon }) => {
+                    const isSelected = regType === type;
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        aria-pressed={isSelected}
+                        style={{
+                          flex: 1,
+                          padding: '0.5rem',
+                          borderRadius: 'var(--radius-sm)',
+                          border: isSelected ? '1px solid rgba(255, 255, 255, 0.4)' : '1px solid transparent',
+                          background: isSelected ? 'var(--accent-gradient)' : 'transparent',
+                          boxShadow: isSelected ? '0 2px 10px rgba(185, 28, 28, 0.55), 0 0 8px rgba(255, 255, 255, 0.2)' : 'none',
+                          color: '#ffffff',
+                          cursor: 'pointer',
+                          fontWeight: '700',
+                          fontSize: '0.85rem',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.4rem',
+                          transition: 'var(--transition-fast)'
+                        }}
+                        onClick={() => setRegType(type)}
+                      >
+                        <Icon size={16} /> {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

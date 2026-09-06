@@ -452,6 +452,27 @@ export const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOU
 };
 
 /**
+ * Executes an authenticated credential mutation (login or register) with serialization and shape validation.
+ * @param {string} endpoint - API path ('/auth/register' or '/auth/login')
+ * @param {RegisterPayload | LoginPayload} data - request body payload
+ * @returns {Promise<ApiResponse<AuthResponseData>>}
+ */
+const mutateAuthEndpoint = (endpoint, data) => serializeAuth(async (signal) => {
+  const result = await request(endpoint, {
+    method: 'POST',
+    body: JSON.stringify(data),
+    signal
+  });
+  if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
+    throw new Error('Invalid response shape from server: missing or invalid user data');
+  }
+  if (result.data?.token) {
+    safeStorage.setItem('cms_auth_token', result.data.token);
+  }
+  return result;
+});
+
+/**
  * API client exposing backend authentication and contact management endpoints.
  */
 export const api = {
@@ -463,20 +484,7 @@ export const api = {
    */
   async register(data) {
     if (!data) throw new Error('Registration data is required');
-    return serializeAuth(async (signal) => {
-      const result = await request('/auth/register', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal
-      });
-      if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
-        throw new Error('Invalid response shape from server: missing or invalid user data');
-      }
-      if (result.data?.token) {
-        safeStorage.setItem('cms_auth_token', result.data.token);
-      }
-      return result;
-    });
+    return mutateAuthEndpoint('/auth/register', data);
   },
 
   /**
@@ -487,20 +495,7 @@ export const api = {
    */
   async login(data) {
     if (!data) throw new Error('Login credentials are required');
-    return serializeAuth(async (signal) => {
-      const result = await request('/auth/login', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal
-      });
-      if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
-        throw new Error('Invalid response shape from server: missing or invalid user data');
-      }
-      if (result.data?.token) {
-        safeStorage.setItem('cms_auth_token', result.data.token);
-      }
-      return result;
-    });
+    return mutateAuthEndpoint('/auth/login', data);
   },
 
   /**

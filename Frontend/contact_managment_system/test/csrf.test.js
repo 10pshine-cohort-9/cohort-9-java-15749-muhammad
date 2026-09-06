@@ -211,13 +211,12 @@ describe('Authenticated Request Security (request)', () => {
     assert.equal(fetchCalled, false, 'Fetch must not be called when destination is an insecure non-local HTTP URL');
   });
 
-  test('permits local HTTP origins and omits cms_auth_token over plaintext HTTP', async () => {
-    safeStorage.setItem('cms_auth_token', 'local-secret-token');
-    let capturedHeaders = null;
-    let capturedUrl = null;
+  const setupMockFetch = () => {
+    const captured = { url: null, headers: null, options: null };
     globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedHeaders = options.headers;
+      captured.url = url;
+      captured.headers = options.headers;
+      captured.options = options;
       return {
         ok: true,
         status: 200,
@@ -225,6 +224,12 @@ describe('Authenticated Request Security (request)', () => {
         json: async () => ({ success: true, data: { ok: true } })
       };
     };
+    return captured;
+  };
+
+  test('permits local HTTP origins and omits cms_auth_token over plaintext HTTP', async () => {
+    safeStorage.setItem('cms_auth_token', 'local-secret-token');
+    const captured = setupMockFetch();
 
     await request('/auth/phone', {
       method: 'PUT',
@@ -232,23 +237,12 @@ describe('Authenticated Request Security (request)', () => {
       body: JSON.stringify({ phone: '+1234567890' })
     });
 
-    assert.equal(capturedUrl, 'http://localhost:8080/api/auth/phone');
-    assert.equal(capturedHeaders?.Authorization, undefined);
+    assert.equal(captured.url, 'http://localhost:8080/api/auth/phone');
+    assert.equal(captured.headers?.Authorization, undefined);
   });
 
   test('removes caller-supplied Authorization header over plaintext HTTP', async () => {
-    let capturedHeaders = null;
-    let capturedUrl = null;
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedHeaders = options.headers;
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        json: async () => ({ success: true, data: { ok: true } })
-      };
-    };
+    const captured = setupMockFetch();
 
     await request('/auth/phone', {
       method: 'PUT',
@@ -257,25 +251,14 @@ describe('Authenticated Request Security (request)', () => {
       body: JSON.stringify({ phone: '+1234567890' })
     });
 
-    assert.equal(capturedUrl, 'http://localhost:8080/api/auth/phone');
-    assert.equal(capturedHeaders?.Authorization, undefined);
-    assert.equal(capturedHeaders?.authorization, undefined);
+    assert.equal(captured.url, 'http://localhost:8080/api/auth/phone');
+    assert.equal(captured.headers?.Authorization, undefined);
+    assert.equal(captured.headers?.authorization, undefined);
   });
 
   test('strips authorization and auth token on whitespace-prefixed HTTP base URL', async () => {
     safeStorage.setItem('cms_auth_token', 'sensitive-auth-token');
-    let capturedHeaders = null;
-    let capturedUrl = null;
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedHeaders = options.headers;
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        json: async () => ({ success: true, data: { ok: true } })
-      };
-    };
+    const captured = setupMockFetch();
 
     await request('/auth/phone', {
       method: 'PUT',
@@ -284,25 +267,14 @@ describe('Authenticated Request Security (request)', () => {
       body: JSON.stringify({ phone: '+1234567890' })
     });
 
-    assert.equal(capturedUrl, 'http://localhost:8080/api/auth/phone');
-    assert.equal(capturedHeaders?.Authorization, undefined);
-    assert.equal(capturedHeaders?.authorization, undefined);
+    assert.equal(captured.url, 'http://localhost:8080/api/auth/phone');
+    assert.equal(captured.headers?.Authorization, undefined);
+    assert.equal(captured.headers?.authorization, undefined);
   });
 
   test('permits HTTPS origins and attaches cms_auth_token', async () => {
     safeStorage.setItem('cms_auth_token', 'remote-secret-token');
-    let capturedHeaders = null;
-    let capturedUrl = null;
-    globalThis.fetch = async (url, options) => {
-      capturedUrl = url;
-      capturedHeaders = options.headers;
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        json: async () => ({ success: true, data: { ok: true } })
-      };
-    };
+    const captured = setupMockFetch();
 
     await request('/auth/phone', {
       method: 'PUT',
@@ -310,21 +282,12 @@ describe('Authenticated Request Security (request)', () => {
       body: JSON.stringify({ phone: '+1234567890' })
     });
 
-    assert.equal(capturedUrl, 'https://cohort-9-java-15749-muhammad-production.up.railway.app/api/auth/phone');
-    assert.equal(capturedHeaders?.Authorization, 'Bearer remote-secret-token');
+    assert.equal(captured.url, 'https://cohort-9-java-15749-muhammad-production.up.railway.app/api/auth/phone');
+    assert.equal(captured.headers?.Authorization, 'Bearer remote-secret-token');
   });
 
   test('enforces redirect error option and prevents callers from overriding it', async () => {
-    let capturedOptions = null;
-    globalThis.fetch = async (url, options) => {
-      capturedOptions = options;
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: () => 'application/json' },
-        json: async () => ({ success: true })
-      };
-    };
+    const captured = setupMockFetch();
 
     await request('/auth/profile', {
       method: 'GET',
@@ -332,6 +295,6 @@ describe('Authenticated Request Security (request)', () => {
       redirect: 'follow'
     });
 
-    assert.equal(capturedOptions?.redirect, 'error');
+    assert.equal(captured.options?.redirect, 'error');
   });
 });
