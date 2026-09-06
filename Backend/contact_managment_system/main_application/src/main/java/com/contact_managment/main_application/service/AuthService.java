@@ -284,7 +284,7 @@ public class AuthService {
         try {
             saved = userRepository.saveAndFlush(user);
         } catch (DataIntegrityViolationException ex) {
-            log.warn("Database conflict updating phone for user ID {}: {}", userId, ex.getMessage());
+            log.warn("Database conflict updating phone for user ID {}: constraint violation occurred", userId);
             throw new UserAlreadyExistsException("Phone number is already associated with another account");
         }
         log.info("Phone number successfully updated for user ID: {}", userId);
@@ -308,7 +308,7 @@ public class AuthService {
     @Transactional
     public void deleteAccount(Long userId) {
         log.warn("Permanent account closure initiated for user ID: {}", userId);
-        User user = userRepository.findById(userId)
+        User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
 
         List<Contact> contacts = contactRepository.findByUser(user);

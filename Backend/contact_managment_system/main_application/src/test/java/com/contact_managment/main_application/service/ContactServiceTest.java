@@ -72,7 +72,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+111222333").label("MOBILE").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
 
         ContactDto result = contactService.createContact(1L, contactDto);
@@ -102,7 +102,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
         when(contactRepository.save(any(Contact.class))).thenAnswer(invocation -> {
             Contact c = invocation.getArgument(0);
@@ -149,7 +149,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+987654321").label("MOBILE").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findByIdAndUser(10L, sampleUser)).thenReturn(Optional.of(sampleContact));
         when(contactRepository.save(any(Contact.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -265,7 +265,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
 
         assertThrows(DuplicatePhoneNumberException.class, () -> contactService.createContact(1L, dto));
     }
@@ -281,7 +281,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findPhoneNumbersByUser(sampleUser))
                 .thenReturn(List.of("+1234567890"));
 
@@ -300,7 +300,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findPhoneNumbersByUser(sampleUser))
                 .thenReturn(List.of());
 
@@ -319,7 +319,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findByIdAndUser(10L, sampleUser)).thenReturn(Optional.of(sampleContact));
         when(contactRepository.findPhoneNumbersByUserAndContactIdNot(sampleUser, 10L))
                 .thenReturn(List.of());
@@ -340,7 +340,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
 
         DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
                 () -> contactService.createContact(1L, dto));
@@ -365,7 +365,7 @@ class ContactServiceTest {
                 ))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findByUser(sampleUser)).thenReturn(List.of(sampleContact));
 
         DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
@@ -402,12 +402,14 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15553334444").label("HOME").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
         when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
 
         int count = contactService.importContacts(1L, List.of(dto1, dto2));
 
         assertEquals(2, count);
+        verify(contactRepository, times(1)).findPhoneNumbersByUser(sampleUser);
         verify(contactRepository, times(2)).save(any(Contact.class));
     }
 
@@ -426,7 +428,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
         when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
 
@@ -449,7 +451,7 @@ class ContactServiceTest {
         assertThrows(com.contact_managment.main_application.exception.BadRequestException.class,
                 () -> contactService.importContacts(1L, List.of()));
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         List<ContactDto> listWithNull = java.util.Collections.singletonList(null);
         assertThrows(com.contact_managment.main_application.exception.BadRequestException.class,
                 () -> contactService.importContacts(1L, listWithNull));

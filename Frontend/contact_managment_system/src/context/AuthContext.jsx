@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useState, useEffect, useContext, useCallback, useMemo } from 'react';
-import { api, getSessionGeneration, incrementSessionGeneration } from '../services/api.js';
+import { api, getSessionGeneration, incrementSessionGeneration, applyUserUpdate } from '../services/api.js';
 import { safeStorage, cleanupLegacyStorage } from '../utils/storage.js';
 
 const AuthContext = createContext(null);
@@ -205,13 +205,7 @@ export const AuthProvider = ({ children }) => {
    */
   const updateUser = useCallback((updatedFields, expectedUserId) => {
     if (!updatedFields || typeof updatedFields !== 'object') return;
-    setUser((prev) => {
-      if (!prev) return prev;
-      if (expectedUserId !== undefined && expectedUserId !== null && String(prev.id) !== String(expectedUserId)) {
-        return prev;
-      }
-      return { ...prev, ...updatedFields };
-    });
+    setUser((prev) => applyUserUpdate(prev, updatedFields, expectedUserId));
   }, []);
 
   useEffect(() => {
@@ -255,4 +249,7 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export { applyUserUpdate };
+
 

@@ -5,7 +5,8 @@ import {
   getSessionGeneration,
   incrementSessionGeneration,
   resetSessionGeneration,
-  handleUnauthorized
+  handleUnauthorized,
+  applyUserUpdate
 } from '../src/services/api.js';
 import { safeStorage } from '../src/utils/storage.js';
 
@@ -745,6 +746,33 @@ describe('API Response Shape Validation & Payload Integrity', () => {
 });
 
 describe('AuthContext updateUser Cross-Session Protection', () => {
+  test('applyUserUpdate pure helper guards against mismatched expectedUserId', () => {
+    const user = { id: 2, firstName: 'UserB', phone: '+1111111111' };
+
+    // Mismatched expectedUserId (User A's ID 1 vs current User B's ID 2)
+    const discarded = applyUserUpdate(user, { phone: '+9999999999' }, 1);
+    assert.equal(discarded, user, 'Must return unmodified user reference when expectedUserId mismatches');
+    assert.equal(discarded.phone, '+1111111111');
+
+    // Matching expectedUserId
+    const updated = applyUserUpdate(user, { phone: '+2222222222' }, 2);
+    assert.notEqual(updated, user);
+    assert.equal(updated.phone, '+2222222222');
+    assert.equal(updated.id, 2);
+
+    // Matching string / number coercion
+    const updatedStringId = applyUserUpdate(user, { phone: '+3333333333' }, '2');
+    assert.equal(updatedStringId.phone, '+3333333333');
+
+    // Omitted expectedUserId applies update
+    const updatedOmitted = applyUserUpdate(user, { firstName: 'UpdatedB' });
+    assert.equal(updatedOmitted.firstName, 'UpdatedB');
+
+    // Null or invalid arguments
+    assert.equal(applyUserUpdate(null, { phone: '123' }, 2), null);
+    assert.equal(applyUserUpdate(user, null, 2), user);
+  });
+
   test('updateUser discards changes if expectedUserId does not match current user', () => {
     let currentUser = { id: 2, firstName: 'UserB', phone: '+1111111111' };
     const syncUserToStorage = (user) => {
@@ -762,13 +790,7 @@ describe('AuthContext updateUser Cross-Session Protection', () => {
 
     const updateUser = (updatedFields, expectedUserId) => {
       if (!updatedFields || typeof updatedFields !== 'object') return;
-      setUser((prev) => {
-        if (!prev) return prev;
-        if (expectedUserId !== undefined && expectedUserId !== null && String(prev.id) !== String(expectedUserId)) {
-          return prev;
-        }
-        return { ...prev, ...updatedFields };
-      });
+      setUser((prev) => applyUserUpdate(prev, updatedFields, expectedUserId));
     };
 
     // Attempting to apply User A's (ID 1) update to User B (ID 2)

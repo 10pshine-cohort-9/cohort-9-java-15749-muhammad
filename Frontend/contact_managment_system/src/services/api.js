@@ -303,6 +303,22 @@ const isValidUserData = (user) => {
 };
 
 /**
+ * Applies updated profile fields to a user object while guarding against mismatched user IDs across sessions.
+ * @param {any} prevUser - current user state object
+ * @param {any} updatedFields - partial user profile fields to apply
+ * @param {number|string} [expectedUserId] - optional user ID to guard against stale updates across sessions
+ * @returns {any} updated user object, or unmodified prevUser if invalid or ID mismatch
+ */
+export const applyUserUpdate = (prevUser, updatedFields, expectedUserId) => {
+  if (!prevUser) return prevUser;
+  if (!updatedFields || typeof updatedFields !== 'object') return prevUser;
+  if (expectedUserId !== undefined && expectedUserId !== null && String(prevUser.id) !== String(expectedUserId)) {
+    return prevUser;
+  }
+  return { ...prevUser, ...updatedFields };
+};
+
+/**
  * Performs an HTTP fetch request with timeout abort signal, credentials for HttpOnly cookies,
  * centralized CSRF headers, and error handling.
  * Rejects insecure HTTP requests to non-local origins before dispatching.
@@ -714,6 +730,7 @@ export const api = {
   incrementSessionGeneration,
   resetSessionGeneration,
   getCsrfToken,
-  handleUnauthorized
+  handleUnauthorized,
+  applyUserUpdate
 };
 

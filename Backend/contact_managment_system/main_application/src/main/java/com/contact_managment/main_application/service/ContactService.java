@@ -147,7 +147,7 @@ public class ContactService {
         if (contactDto == null) {
             throw new BadRequestException("Contact data cannot be null");
         }
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
         return createContactInternal(user, contactDto);
     }
 
@@ -223,7 +223,7 @@ public class ContactService {
         if (contactDto == null) {
             throw new BadRequestException("Contact data cannot be null");
         }
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
 
         Contact contact = contactRepository.findByIdAndUser(contactId, user)
                 .orElseThrow(() -> new ResourceNotFoundException("Contact not found with ID: " + contactId));
@@ -323,7 +323,7 @@ public class ContactService {
             throw new BadRequestException("Contacts list cannot be empty");
         }
         log.info("Importing {} contacts for user ID: {}", contactDtos.size(), userId);
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
 
         List<String> existing = contactRepository.findPhoneNumbersByUser(user);
         Set<String> knownPhones = existing.stream()
@@ -358,6 +358,18 @@ public class ContactService {
      */
     private User getUserById(Long userId) {
         return userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
+    }
+
+    /**
+     * Helper method to lookup a user entity by ID with a pessimistic write lock for write operations.
+     *
+     * @param userId user ID
+     * @return User entity
+     * @throws ResourceNotFoundException if user is not found
+     */
+    private User getUserByIdForUpdate(Long userId) {
+        return userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
     }
 

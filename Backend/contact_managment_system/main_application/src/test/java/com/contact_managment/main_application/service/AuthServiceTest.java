@@ -574,7 +574,7 @@ class AuthServiceTest {
     @Test
     @DisplayName("Should delete account and all contacts successfully")
     void deleteAccount_Success() {
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         Contact contact = Contact.builder().id(101L).build();
         List<Contact> contacts = List.of(contact);
         when(contactRepository.findByUser(sampleUser)).thenReturn(contacts);
@@ -586,6 +586,14 @@ class AuthServiceTest {
         inOrder.verify(contactRepository).flush();
         inOrder.verify(userRepository).delete(sampleUser);
         inOrder.verify(userRepository).flush();
+    }
+
+    @Test
+    @DisplayName("Should throw ResourceNotFoundException when user is not found during deleteAccount")
+    void deleteAccount_UserNotFound_ThrowsException() {
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class, () -> authService.deleteAccount(1L));
     }
 
     @Test
