@@ -1,6 +1,6 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useState, useEffect, useContext, useCallback, useMemo } from 'react';
-import { api, getSessionGeneration, incrementSessionGeneration } from '../services/api.js';
+import { api, getSessionGeneration, incrementSessionGeneration, applyUserUpdate } from '../services/api.js';
 import { safeStorage, cleanupLegacyStorage } from '../utils/storage.js';
 
 const AuthContext = createContext(null);
@@ -43,10 +43,11 @@ export const AuthProvider = ({ children }) => {
     incrementSessionGeneration();
     try {
       await api.logout();
-      clearAuthState();
     } catch (err) {
       console.warn('Logout request failed:', err);
       throw err;
+    } finally {
+      clearAuthState();
     }
   }, [clearAuthState]);
 
@@ -197,14 +198,31 @@ export const AuthProvider = ({ children }) => {
     }
   }, [user]);
 
+  /**
+   * Directly updates user profile fields in memory and triggers persistent storage synchronization.
+   * @param {Partial<import('../services/api').UserProfile>} updatedFields
+   * @param {number|string} [expectedUserId] - optional user ID to guard against stale updates across sessions
+   */
+  const updateUser = useCallback((updatedFields, expectedUserId) => {
+    if (!updatedFields || typeof updatedFields !== 'object') return;
+    setUser((prev) => applyUserUpdate(prev, updatedFields, expectedUserId));
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      safeStorage.setItem('cms_user', JSON.stringify(user));
+    }
+  }, [user]);
+
   const contextValue = useMemo(() => ({
     user,
     loading,
     login,
     register,
     logout,
-    refreshProfile
-  }), [user, loading, login, register, logout, refreshProfile]);
+    refreshProfile,
+    updateUser
+  }), [user, loading, login, register, logout, refreshProfile, updateUser]);
 
   return (
     <AuthContext.Provider value={contextValue}>
@@ -231,4 +249,7 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export { applyUserUpdate };
+
 

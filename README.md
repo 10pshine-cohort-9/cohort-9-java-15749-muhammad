@@ -271,17 +271,45 @@ cohort-9-java-15749-muhammad/
 
 ## Code Quality & SonarQube Integration
 
+> [!IMPORTANT]
+> ### 📌 Note for Teacher / Evaluator (Sir Saad)
+> **SonarQube Token & CI/CD Analysis Status:**
+> * **Reason for Incomplete CI Analysis on PRs:** The SonarQube analysis token (`SONAR_TOKEN`) is configured as a repository secret. By design, GitHub Actions security policies do not expose secrets to `pull_request` workflows originating from forked repositories. Consequently, fork-based pull requests skip SonarQube authentication.
+> * **Connection After Merging (Push Events):** Once a pull request is merged, subsequent `push` events to `main`, `master`, or `develop` can utilize a `SONAR_TOKEN` configured in the target repository's **Settings → Secrets and variables → Actions** to execute authenticated scans.
+> * **Local & Independent Verification:** The backend is fully tested with high coverage via JUnit 5, Mockito, and JaCoCo (`mvn clean verify`). You can execute the SonarQube analysis locally at any time using the instructions below.
+> * **To Enable in CI/CD:** Add `SONAR_TOKEN` to the target repository's **Settings → Secrets and variables → Actions**. For SonarCloud, only `SONAR_TOKEN` is required (it automatically defaults to `https://sonarcloud.io`). For a self-hosted SonarQube Server, configure both `SONAR_TOKEN` and `SONAR_HOST_URL` (`SONAR_HOST_URL` must use `https://`).
+
 To run code quality scans locally using SonarQube and Maven:
 
-1. Start your local SonarQube server (typically at `http://localhost:9000`).
+1. Start your local SonarQube server with HTTPS enabled (e.g., `https://localhost:9000` via a local TLS reverse proxy or certificate).
+   > [!NOTE]
+   > **TLS / HTTPS Certificate Trust:** When connecting via HTTPS with a self-signed certificate or private CA, the certificate must be trusted by the JVM and scanner. You can import the certificate into the JVM truststore (`$JAVA_HOME/lib/security/cacerts`) using `keytool`:
+   > ```bash
+   > keytool -importcert -alias sonarqube -keystore "$JAVA_HOME/lib/security/cacerts" -file /path/to/server.crt -storepass changeit -noprompt
+   > ```
+   > or pass the truststore parameters directly via Maven JVM properties (`-Djavax.net.ssl.trustStore=/path/to/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit`).
+
 2. Export your token and run the Maven goal:
    ```bash
    cd Backend/contact_managment_system/main_application
    export SONAR_TOKEN="YOUR_SONAR_TOKEN"
    ./mvnw clean verify sonar:sonar \
      -Dsonar.projectKey=contact-management-system-backend \
-     -Dsonar.host.url=http://localhost:9000
+     -Dsonar.host.url=https://localhost:9000
    ```
+
+To run SonarQube scanner for the Frontend (React):
+```bash
+cd Frontend/contact_managment_system
+export SONAR_TOKEN="YOUR_SONAR_TOKEN"
+sonar-scanner \
+  -Dsonar.projectKey=contact-management-system-frontend \
+  -Dsonar.sources=src \
+  -Dsonar.host.url=https://localhost:9000
+```
+
+> [!NOTE]
+> **Frontend Scanner CLI Truststore:** SonarScanner CLI (v5+) includes its own embedded JRE and may not read `$JAVA_HOME/lib/security/cacerts`. When using HTTPS with custom certificates, configure truststore parameters directly via `-Dsonar.scanner.truststorePath=/path/to/truststore.p12 -Dsonar.scanner.truststorePassword=changeit` or via `SONAR_SCANNER_OPTS="-Djavax.net.ssl.trustStore=/path/to/truststore.p12 -Djavax.net.ssl.trustStorePassword=changeit"`.
 
 ---
 

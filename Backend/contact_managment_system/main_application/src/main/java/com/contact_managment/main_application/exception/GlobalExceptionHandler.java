@@ -77,6 +77,29 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Handles DuplicatePhoneNumberException and returns HTTP 409 Conflict.
+     *
+     * @param ex the exception
+     * @param request the HTTP request
+     * @return response entity with ErrorResponse payload
+     */
+    @ExceptionHandler(DuplicatePhoneNumberException.class)
+    public ResponseEntity<ErrorResponse> handleDuplicatePhoneNumberException(DuplicatePhoneNumberException ex, HttpServletRequest request) {
+        log.warn("Duplicate phone number exception at {}", sanitizeForLog(request.getRequestURI()));
+        ErrorResponse error = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(HttpStatus.CONFLICT.value())
+                .error(ex.isAccountClosed() ? "Account Terminated" : "Duplicate Phone Number")
+                .message(ex.getMessage())
+                .path(request.getRequestURI())
+                .strike(ex.getStrike())
+                .accountClosed(ex.isAccountClosed())
+                .duplicateNumber(ex.getDuplicateNumber())
+                .build();
+        return new ResponseEntity<>(error, HttpStatus.CONFLICT);
+    }
+
+    /**
      * Handles DataIntegrityViolationException and returns HTTP 409 Conflict.
      *
      * @param ex the exception

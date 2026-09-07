@@ -1,23 +1,28 @@
 package com.contact_managment.main_application.service;
 
 import com.contact_managment.main_application.dto.*;
+import com.contact_managment.main_application.entity.Contact;
 import com.contact_managment.main_application.entity.User;
 import com.contact_managment.main_application.exception.BadRequestException;
+import com.contact_managment.main_application.exception.DuplicatePhoneNumberException;
 import com.contact_managment.main_application.exception.InvalidCredentialsException;
 import com.contact_managment.main_application.exception.ResourceNotFoundException;
 import com.contact_managment.main_application.exception.UserAlreadyExistsException;
+import com.contact_managment.main_application.repository.ContactRepository;
 import com.contact_managment.main_application.repository.UserRepository;
 import com.contact_managment.main_application.security.JwtTokenProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -31,18 +36,23 @@ class AuthServiceTest {
     private UserRepository userRepository;
 
     @Mock
+    private ContactRepository contactRepository;
+
+    @Mock
     private PasswordEncoder passwordEncoder;
 
     @Mock
     private JwtTokenProvider tokenProvider;
 
-    @InjectMocks
     private AuthService authService;
 
     private User sampleUser;
 
     @BeforeEach
     void setUp() {
+        DuplicatePhonePolicyService duplicatePhonePolicyService = new DuplicatePhonePolicyService(userRepository, contactRepository);
+        authService = new AuthService(userRepository, passwordEncoder, tokenProvider, contactRepository, duplicatePhonePolicyService);
+
         sampleUser = User.builder()
                 .id(1L)
                 .firstName("John")
@@ -413,6 +423,238 @@ class AuthServiceTest {
     @DisplayName("Should throw BadRequestException when changePassword receives null request")
     void changePassword_NullRequest_ThrowsBadRequest() {
         assertThrows(BadRequestException.class, () -> authService.changePassword(1L, null));
+    }
+
+    @Test
+    @DisplayName("Should update phone number successfully")
+    void updatePhone_Success() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+9876543210")
+                .build();
+
+        when(userRepository.findByPhone("+9876543210")).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.saveAndFlush(any(User.class))).thenReturn(sampleUser);
+
+        UserProfileDto result = authService.updatePhone(1L, request);
+
+        assertNotNull(result);
+        assertEquals("+9876543210", sampleUser.getPhone());
+        verify(userRepository).saveAndFlush(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should reset duplicate strike count to 0 upon successful phone update")
+    void updatePhone_ResetsPriorStrikeCountOnSuccess() {
+        sampleUser.setDuplicateStrikeCount(1);
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+9876543210")
+                .build();
+
+        when(userRepository.findByPhone("+9876543210")).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
+        when(userRepository.saveAndFlush(any(User.class))).thenReturn(sampleUser);
+
+        UserProfileDto result = authService.updatePhone(1L, request);
+
+        assertNotNull(result);
+        assertEquals(0, sampleUser.getDuplicateStrikeCount());
+        verify(userRepository).saveAndFlush(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should throw BadRequestException when updatePhone receives phone shorter than 7 characters")
+    void updatePhone_TooShort_ThrowsBadRequest() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("  12345  ")
+                .build();
+
+        BadRequestException ex = assertThrows(BadRequestException.class, () -> authService.updatePhone(1L, request));
+        assertEquals("Phone number must be at least 7 characters", ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Should throw BadRequestException when updatePhone receives phone exceeding 30 characters")
+    void updatePhone_TooLong_ThrowsBadRequest() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+1234567890123456789012345678901")
+                .build();
+
+        BadRequestException ex = assertThrows(BadRequestException.class, () -> authService.updatePhone(1L, request));
+        assertEquals("Phone number cannot exceed 30 characters", ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("Should throw UserAlreadyExistsException when phone number is taken by another user")
+    void updatePhone_AlreadyExists() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+9876543210")
+                .build();
+
+        User existingOther = User.builder().id(2L).phone("+9876543210").build();
+        when(userRepository.findByPhone("+9876543210")).thenReturn(Optional.of(existingOther));
+
+        assertThrows(UserAlreadyExistsException.class, () -> authService.updatePhone(1L, request));
+    }
+
+    @Test
+    @DisplayName("Should throw DuplicatePhoneNumberException when phone number already exists in user's contacts")
+    void updatePhone_DuplicateInContacts() {
+        sampleUser.setDuplicateStrikeCount(0);
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+1 (555) 234-5678")
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser))
+                .thenReturn(List.of("+15552345678"));
+
+        DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
+                () -> authService.updatePhone(1L, request));
+        assertEquals(1, ex.getStrike());
+        assertFalse(ex.isAccountClosed());
+        assertEquals(1, sampleUser.getDuplicateStrikeCount());
+        verify(userRepository).saveAndFlush(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should purge contacts and delete account on repeat duplicate phone violation during updatePhone")
+    void updatePhone_DuplicateInContacts_Strike2_DeletesAccount() {
+        sampleUser.setDuplicateStrikeCount(1);
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+1 (555) 234-5678")
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser))
+                .thenReturn(List.of("+15552345678"));
+
+        DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
+                () -> authService.updatePhone(1L, request));
+        assertEquals(2, ex.getStrike());
+        assertTrue(ex.isAccountClosed());
+        assertEquals(2, sampleUser.getDuplicateStrikeCount());
+        verify(userRepository).delete(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should canonicalize formatted phone number when updating phone")
+    void updatePhone_CanonicalizesPhone() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+1 (555) 234-5678")
+                .build();
+
+        when(userRepository.findByPhone("+15552345678")).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.saveAndFlush(any(User.class))).thenReturn(sampleUser);
+
+        UserProfileDto result = authService.updatePhone(1L, request);
+
+        assertNotNull(result);
+        assertEquals("+15552345678", sampleUser.getPhone());
+        verify(userRepository).findByPhone("+15552345678");
+    }
+
+    @Test
+    @DisplayName("Should throw UserAlreadyExistsException when database unique constraint rejects phone update")
+    void updatePhone_DatabaseConflict_ThrowsUserAlreadyExists() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+9876543210")
+                .build();
+
+        when(userRepository.findByPhone("+9876543210")).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.saveAndFlush(any(User.class)))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("Duplicate entry"));
+
+        assertThrows(UserAlreadyExistsException.class, () -> authService.updatePhone(1L, request));
+    }
+
+    @Test
+    @DisplayName("Should delete account and all contacts successfully")
+    void deleteAccount_Success() {
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        Contact contact = Contact.builder().id(101L).build();
+        List<Contact> contacts = List.of(contact);
+        when(contactRepository.findByUser(sampleUser)).thenReturn(contacts);
+
+        authService.deleteAccount(1L);
+
+        InOrder inOrder = inOrder(contactRepository, userRepository);
+        inOrder.verify(contactRepository).deleteAll(contacts);
+        inOrder.verify(contactRepository).flush();
+        inOrder.verify(userRepository).delete(sampleUser);
+        inOrder.verify(userRepository).flush();
+    }
+
+    @Test
+    @DisplayName("Should throw ResourceNotFoundException when user is not found during deleteAccount")
+    void deleteAccount_UserNotFound_ThrowsException() {
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class, () -> authService.deleteAccount(1L));
+    }
+
+    @Test
+    @DisplayName("Should canonicalize formatted phone number and check existsByPhone with canonical representation during registration")
+    void register_FormattedPhoneCanonicalized_Success() {
+        RegisterRequest request = RegisterRequest.builder()
+                .firstName("Jane")
+                .lastName("Doe")
+                .phone("+1 (555) 234-5678")
+                .password("password123")
+                .build();
+
+        when(userRepository.existsByPhone("+15552345678")).thenReturn(false);
+        when(userRepository.existsByEmail("+15552345678")).thenReturn(false);
+        when(passwordEncoder.encode("password123")).thenReturn("encodedPassword");
+        when(userRepository.saveAndFlush(any(User.class))).thenAnswer(invocation -> {
+            User u = invocation.getArgument(0);
+            u.setId(2L);
+            u.setTokenVersion(1L);
+            return u;
+        });
+        when(tokenProvider.generateToken(2L, 1L)).thenReturn("jwt-token-formatted");
+
+        AuthResult response = authService.register(request);
+
+        assertNotNull(response);
+        assertEquals("jwt-token-formatted", response.getToken());
+        org.mockito.ArgumentCaptor<User> userCaptor = org.mockito.ArgumentCaptor.forClass(User.class);
+        verify(userRepository).saveAndFlush(userCaptor.capture());
+        assertEquals("+15552345678", userCaptor.getValue().getPhone());
+        verify(userRepository).existsByPhone("+15552345678");
+    }
+
+    @Test
+    @DisplayName("Should reject registration with formatted phone when canonical equivalent already exists")
+    void register_FormattedPhoneMatchesExistingCanonical_ThrowsUserAlreadyExists() {
+        RegisterRequest request = RegisterRequest.builder()
+                .firstName("Jane")
+                .lastName("Doe")
+                .phone("+1 (555) 234-5678")
+                .password("password123")
+                .build();
+
+        when(userRepository.existsByPhone("+15552345678")).thenReturn(true);
+
+        assertThrows(UserAlreadyExistsException.class, () -> authService.register(request));
+        verify(userRepository, never()).saveAndFlush(any(User.class));
+    }
+
+    @Test
+    @DisplayName("Should reject updatePhone with formatted phone when canonical equivalent belongs to another user")
+    void updatePhone_FormattedPhoneMatchesExistingCanonical_ThrowsUserAlreadyExists() {
+        UpdatePhoneRequest request = UpdatePhoneRequest.builder()
+                .phone("+1 (555) 234-5678")
+                .build();
+
+        User anotherUser = User.builder().id(2L).phone("+15552345678").build();
+        when(userRepository.findByPhone("+15552345678")).thenReturn(Optional.of(anotherUser));
+
+        assertThrows(UserAlreadyExistsException.class, () -> authService.updatePhone(1L, request));
+        verify(userRepository, never()).findByIdForUpdate(anyLong());
     }
 }
 

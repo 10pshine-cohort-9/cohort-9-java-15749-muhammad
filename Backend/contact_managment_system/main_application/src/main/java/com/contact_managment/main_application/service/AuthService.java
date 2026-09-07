@@ -1,11 +1,14 @@
 package com.contact_managment.main_application.service;
 
 import com.contact_managment.main_application.dto.*;
+import com.contact_managment.main_application.entity.Contact;
 import com.contact_managment.main_application.entity.User;
 import com.contact_managment.main_application.exception.BadRequestException;
+import com.contact_managment.main_application.exception.DuplicatePhoneNumberException;
 import com.contact_managment.main_application.exception.InvalidCredentialsException;
 import com.contact_managment.main_application.exception.ResourceNotFoundException;
 import com.contact_managment.main_application.exception.UserAlreadyExistsException;
+import com.contact_managment.main_application.repository.ContactRepository;
 import com.contact_managment.main_application.repository.UserRepository;
 import com.contact_managment.main_application.security.JwtTokenProvider;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Service managing user authentication, account creation, token generation, profile retrieval, and password rotation.
@@ -28,12 +32,21 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider tokenProvider;
+    private final ContactRepository contactRepository;
+    private final DuplicatePhonePolicyService duplicatePhonePolicyService;
     private final String dummyPasswordHash;
 
-    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenProvider tokenProvider) {
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenProvider tokenProvider, ContactRepository contactRepository) {
+        this(userRepository, passwordEncoder, tokenProvider, contactRepository, new DuplicatePhonePolicyService(userRepository, contactRepository));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AuthService(UserRepository userRepository, PasswordEncoder passwordEncoder, JwtTokenProvider tokenProvider, ContactRepository contactRepository, DuplicatePhonePolicyService duplicatePhonePolicyService) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.tokenProvider = tokenProvider;
+        this.contactRepository = contactRepository;
+        this.duplicatePhonePolicyService = duplicatePhonePolicyService;
         this.dummyPasswordHash = passwordEncoder.encode("dummy-verification-secret");
     }
 
@@ -55,7 +68,10 @@ public class AuthService {
         validatePassword(request.getPassword(), "Password");
 
         String email = StringUtils.hasText(request.getEmail()) ? request.getEmail().trim().toLowerCase(java.util.Locale.ROOT) : null;
-        String phone = StringUtils.hasText(request.getPhone()) ? request.getPhone().trim() : null;
+        String phone = null;
+        if (StringUtils.hasText(request.getPhone())) {
+            phone = validateAndNormalizePhone(request.getPhone());
+        }
 
         if (!StringUtils.hasText(email) && !StringUtils.hasText(phone)) {
             throw new BadRequestException("Either Email or Phone number must be provided for registration");
@@ -221,6 +237,93 @@ public class AuthService {
     }
 
     /**
+     * Adds or updates the phone number for an authenticated user.
+     *
+     * @param userId the user ID
+     * @param request the update phone payload
+     * @return updated user profile DTO
+     * @throws BadRequestException if payload is invalid
+     * @throws UserAlreadyExistsException if phone number is already registered to another account
+     * @throws ResourceNotFoundException if user is not found
+     */
+    @Transactional(noRollbackFor = DuplicatePhoneNumberException.class)
+    public UserProfileDto updatePhone(Long userId, UpdatePhoneRequest request) {
+        log.info("Updating phone number for user ID: {}", userId);
+        if (request == null || !StringUtils.hasText(request.getPhone())) {
+            throw new BadRequestException("Phone number cannot be empty");
+        }
+
+        String phone = request.getPhone().trim();
+        String canonicalPhone = validateAndNormalizePhone(phone);
+
+        userRepository.findByPhone(canonicalPhone).ifPresent(existing -> {
+            if (!existing.getId().equals(userId)) {
+                throw new UserAlreadyExistsException("Phone number is already associated with another account");
+            }
+        });
+
+        User user = userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
+
+        List<String> contactPhones = contactRepository.findPhoneNumbersByUser(user);
+        if (contactPhones != null && !contactPhones.isEmpty()) {
+            boolean conflict = contactPhones.stream()
+                    .filter(StringUtils::hasText)
+                    .map(this::normalizePhoneNumber)
+                    .anyMatch(p -> p.equals(canonicalPhone));
+            if (conflict) {
+                handleDuplicateStrikeAndThrow(user, phone);
+            }
+        }
+
+        user.setPhone(canonicalPhone);
+        if (user.getDuplicateStrikeCount() > 0) {
+            user.setDuplicateStrikeCount(0);
+        }
+        User saved;
+        try {
+            saved = userRepository.saveAndFlush(user);
+        } catch (DataIntegrityViolationException ex) {
+            log.warn("Database conflict updating phone for user ID {}: constraint violation occurred", userId);
+            throw new UserAlreadyExistsException("Phone number is already associated with another account");
+        }
+        log.info("Phone number successfully updated for user ID: {}", userId);
+
+        return UserProfileDto.builder()
+                .id(saved.getId())
+                .firstName(saved.getFirstName())
+                .lastName(saved.getLastName())
+                .email(saved.getEmail())
+                .phone(saved.getPhone())
+                .createdAt(saved.getCreatedAt())
+                .build();
+    }
+
+    /**
+     * Permanently closes and deletes a user account and all associated contacts.
+     *
+     * @param userId the user ID to close
+     * @throws ResourceNotFoundException if user is not found
+     */
+    @Transactional
+    public void deleteAccount(Long userId) {
+        log.warn("Permanent account closure initiated for user ID: {}", userId);
+        User user = userRepository.findByIdForUpdate(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
+
+        List<Contact> contacts = contactRepository.findByUser(user);
+        if (!contacts.isEmpty()) {
+            contactRepository.deleteAll(contacts);
+            contactRepository.flush();
+            log.info("Deleted {} contacts for user ID: {}", contacts.size(), userId);
+        }
+
+        userRepository.delete(user);
+        userRepository.flush();
+        log.info("User account ID: {} permanently closed and purged.", userId);
+    }
+
+    /**
      * Validates that a password is non-null and does not exceed 72 UTF-8 bytes.
      *
      * @param password the password to validate
@@ -234,6 +337,39 @@ public class AuthService {
         if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new BadRequestException(fieldName + " cannot exceed 72 bytes");
         }
+    }
+
+    /**
+     * Atomically increments the user's duplicate strike count, persists the change,
+     * and either throws a strike-1 warning or terminates the user account on strike 2.
+     *
+     * @param user owning user
+     * @param rawPhone duplicate phone number
+     */
+    private void handleDuplicateStrikeAndThrow(User user, String rawPhone) {
+        duplicatePhonePolicyService.handleDuplicateStrikeAndThrow(user, rawPhone);
+    }
+
+    private String validateAndNormalizePhone(String rawInput) {
+        String trimmed = rawInput.trim();
+        if (trimmed.length() < 7) {
+            throw new BadRequestException("Phone number must be at least 7 characters");
+        }
+        if (trimmed.length() > 30) {
+            throw new BadRequestException("Phone number cannot exceed 30 characters");
+        }
+        String canonical = normalizePhoneNumber(trimmed);
+        if (canonical.length() < 7) {
+            throw new BadRequestException("Phone number must be at least 7 characters");
+        }
+        if (canonical.length() > 30) {
+            throw new BadRequestException("Phone number cannot exceed 30 characters");
+        }
+        return canonical;
+    }
+
+    private String normalizePhoneNumber(String phone) {
+        return duplicatePhonePolicyService.normalizePhoneNumber(phone);
     }
 }
 

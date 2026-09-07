@@ -5,6 +5,7 @@ import com.contact_managment.main_application.entity.Contact;
 import com.contact_managment.main_application.entity.ContactEmail;
 import com.contact_managment.main_application.entity.ContactPhone;
 import com.contact_managment.main_application.entity.User;
+import com.contact_managment.main_application.exception.DuplicatePhoneNumberException;
 import com.contact_managment.main_application.exception.ResourceNotFoundException;
 import com.contact_managment.main_application.repository.ContactRepository;
 import com.contact_managment.main_application.repository.UserRepository;
@@ -33,7 +34,6 @@ class ContactServiceTest {
     @Mock
     private UserRepository userRepository;
 
-    @InjectMocks
     private ContactService contactService;
 
     private User sampleUser;
@@ -41,6 +41,9 @@ class ContactServiceTest {
 
     @BeforeEach
     void setUp() {
+        DuplicatePhonePolicyService duplicatePhonePolicyService = new DuplicatePhonePolicyService(userRepository, contactRepository);
+        contactService = new ContactService(contactRepository, userRepository, duplicatePhonePolicyService);
+
         sampleUser = User.builder()
                 .id(1L)
                 .firstName("Jane")
@@ -69,7 +72,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+111222333").label("MOBILE").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
 
         ContactDto result = contactService.createContact(1L, contactDto);
@@ -87,6 +90,31 @@ class ContactServiceTest {
         assertEquals("alice@work.com", capturedContact.getEmails().get(0).getEmail());
         assertEquals(1, capturedContact.getPhones().size());
         assertEquals("+111222333", capturedContact.getPhones().get(0).getPhoneNumber());
+    }
+
+    @Test
+    @DisplayName("Should reset duplicate strike count to 0 upon successful contact creation")
+    void createContact_ResetsPriorStrikeCountOnSuccess() {
+        sampleUser.setDuplicateStrikeCount(1);
+        ContactDto dto = ContactDto.builder()
+                .firstName("Alice")
+                .lastName("Smith")
+                .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
+        when(contactRepository.save(any(Contact.class))).thenAnswer(invocation -> {
+            Contact c = invocation.getArgument(0);
+            c.setId(10L);
+            return c;
+        });
+
+        ContactDto result = contactService.createContact(1L, dto);
+
+        assertNotNull(result);
+        assertEquals(0, sampleUser.getDuplicateStrikeCount());
+        verify(userRepository).saveAndFlush(sampleUser);
     }
 
     @Test
@@ -121,7 +149,7 @@ class ContactServiceTest {
                 .phones(List.of(ContactPhoneDto.builder().phoneNumber("+987654321").label("MOBILE").build()))
                 .build();
 
-        when(userRepository.findById(1L)).thenReturn(Optional.of(sampleUser));
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
         when(contactRepository.findByIdAndUser(10L, sampleUser)).thenReturn(Optional.of(sampleContact));
         when(contactRepository.save(any(Contact.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -223,5 +251,209 @@ class ContactServiceTest {
     void updateContact_NullDto_ThrowsBadRequest() {
         assertThrows(com.contact_managment.main_application.exception.BadRequestException.class,
                 () -> contactService.updateContact(1L, 10L, null));
+    }
+
+    @Test
+    @DisplayName("Should throw DuplicatePhoneNumberException when phone number is duplicated within payload")
+    void createContact_DuplicatePhoneInPayload_ThrowsException() {
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+1234567890").label("WORK").build(),
+                        ContactPhoneDto.builder().phoneNumber("+1234567890").label("MOBILE").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+
+        assertThrows(DuplicatePhoneNumberException.class, () -> contactService.createContact(1L, dto));
+    }
+
+    @Test
+    @DisplayName("Should throw DuplicatePhoneNumberException when phone number exists in another contact")
+    void createContact_DuplicatePhoneAcrossContacts_ThrowsException() {
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+1234567890").label("WORK").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser))
+                .thenReturn(List.of("+1234567890"));
+
+        assertThrows(DuplicatePhoneNumberException.class, () -> contactService.createContact(1L, dto));
+    }
+
+    @Test
+    @DisplayName("Should throw DuplicatePhoneNumberException when phone number matches user's profile phone on create")
+    void createContact_DuplicateProfilePhone_ThrowsException() {
+        sampleUser.setPhone("+1 (555) 234-5678");
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+15552345678").label("WORK").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser))
+                .thenReturn(List.of());
+
+        assertThrows(DuplicatePhoneNumberException.class, () -> contactService.createContact(1L, dto));
+    }
+
+    @Test
+    @DisplayName("Should throw DuplicatePhoneNumberException when phone number matches user's profile phone on update")
+    void updateContact_DuplicateProfilePhone_ThrowsException() {
+        sampleUser.setPhone("+1 (555) 234-5678");
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+15552345678").label("WORK").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findByIdAndUser(10L, sampleUser)).thenReturn(Optional.of(sampleContact));
+        when(contactRepository.findPhoneNumbersByUserAndContactIdNot(sampleUser, 10L))
+                .thenReturn(List.of());
+
+        assertThrows(DuplicatePhoneNumberException.class, () -> contactService.updateContact(1L, 10L, dto));
+    }
+
+    @Test
+    @DisplayName("Should increment strike count to 1 and persist warning when first duplicate phone is rejected")
+    void createContact_Strike1_PersistsStrikeAndReturnsWarning() {
+        sampleUser.setDuplicateStrikeCount(0);
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+15551234567").label("WORK").build(),
+                        ContactPhoneDto.builder().phoneNumber("+15551234567").label("HOME").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+
+        DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
+                () -> contactService.createContact(1L, dto));
+
+        assertEquals(1, ex.getStrike());
+        assertFalse(ex.isAccountClosed());
+        assertEquals(1, sampleUser.getDuplicateStrikeCount());
+        verify(userRepository).saveAndFlush(sampleUser);
+        verify(userRepository, never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("Should increment strike to 2, purge contacts, and delete user account on repeat duplicate violation")
+    void createContact_Strike2_PurgesContactsAndDeletesAccount() {
+        sampleUser.setDuplicateStrikeCount(1);
+        ContactDto dto = ContactDto.builder()
+                .firstName("Test")
+                .lastName("User")
+                .phones(List.of(
+                        ContactPhoneDto.builder().phoneNumber("+15551234567").label("WORK").build(),
+                        ContactPhoneDto.builder().phoneNumber("+15551234567").label("HOME").build()
+                ))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findByUser(sampleUser)).thenReturn(List.of(sampleContact));
+
+        DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
+                () -> contactService.createContact(1L, dto));
+
+        assertEquals(2, ex.getStrike());
+        assertTrue(ex.isAccountClosed());
+        assertEquals(2, sampleUser.getDuplicateStrikeCount());
+        verify(contactRepository).deleteAll(List.of(sampleContact));
+        verify(userRepository).delete(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should configure importContacts with noRollbackFor DuplicatePhoneNumberException")
+    void importContacts_TransactionConfiguredWithNoRollbackForDuplicateException() throws NoSuchMethodException {
+        java.lang.reflect.Method method = ContactService.class.getMethod("importContacts", Long.class, List.class);
+        org.springframework.transaction.annotation.Transactional tx =
+                method.getAnnotation(org.springframework.transaction.annotation.Transactional.class);
+        assertNotNull(tx, "importContacts should be annotated with @Transactional");
+        assertTrue(java.util.Arrays.asList(tx.noRollbackFor()).contains(DuplicatePhoneNumberException.class));
+    }
+
+    @Test
+    @DisplayName("Should import valid contacts successfully")
+    void importContacts_Success() {
+        ContactDto dto1 = ContactDto.builder()
+                .firstName("Alice")
+                .lastName("Smith")
+                .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
+                .build();
+        ContactDto dto2 = ContactDto.builder()
+                .firstName("Bob")
+                .lastName("Jones")
+                .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15553334444").label("HOME").build()))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
+        when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
+
+        int count = contactService.importContacts(1L, List.of(dto1, dto2));
+
+        assertEquals(2, count);
+        verify(contactRepository, times(1)).findPhoneNumbersByUser(sampleUser);
+        verify(contactRepository, times(2)).save(any(Contact.class));
+    }
+
+    @Test
+    @DisplayName("Should save prior valid contact and apply strike when subsequent contact in batch is duplicate")
+    void importContacts_ValidContactThenDuplicate_SavesPriorContactAndAppliesStrike() {
+        sampleUser.setDuplicateStrikeCount(0);
+        ContactDto validDto = ContactDto.builder()
+                .firstName("Valid")
+                .lastName("Contact")
+                .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
+                .build();
+        ContactDto duplicateDto = ContactDto.builder()
+                .firstName("Duplicate")
+                .lastName("Contact")
+                .phones(List.of(ContactPhoneDto.builder().phoneNumber("+15551112222").label("WORK").build()))
+                .build();
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        when(contactRepository.save(any(Contact.class))).thenReturn(sampleContact);
+        when(contactRepository.findPhoneNumbersByUser(sampleUser)).thenReturn(List.of());
+
+        DuplicatePhoneNumberException ex = assertThrows(DuplicatePhoneNumberException.class,
+                () -> contactService.importContacts(1L, List.of(validDto, duplicateDto)));
+
+        assertEquals(1, ex.getStrike());
+        assertFalse(ex.isAccountClosed());
+        assertEquals(1, sampleUser.getDuplicateStrikeCount());
+
+        // Verify valid contact was persisted before the duplicate exception
+        verify(contactRepository, times(1)).save(any(Contact.class));
+        // Verify strike update was persisted
+        verify(userRepository).saveAndFlush(sampleUser);
+    }
+
+    @Test
+    @DisplayName("Should throw BadRequestException on empty list or null contact in importContacts")
+    void importContacts_ValidationPreserved() {
+        assertThrows(com.contact_managment.main_application.exception.BadRequestException.class,
+                () -> contactService.importContacts(1L, List.of()));
+
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(sampleUser));
+        List<ContactDto> listWithNull = java.util.Collections.singletonList(null);
+        assertThrows(com.contact_managment.main_application.exception.BadRequestException.class,
+                () -> contactService.importContacts(1L, listWithNull));
     }
 }

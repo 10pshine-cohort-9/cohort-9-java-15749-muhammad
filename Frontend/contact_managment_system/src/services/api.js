@@ -1,5 +1,58 @@
 import { safeStorage } from '../utils/storage.js';
 
+/**
+ * Checks if a hostname corresponds to a local loopback origin.
+ * @param {string} [hostname]
+ * @returns {boolean}
+ */
+export const isLocalHostname = (hostname) => {
+  if (!hostname || typeof hostname !== 'string') return false;
+  const host = hostname.trim().toLowerCase();
+  return (
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '127.0.0.1' ||
+    host === '[::1]' ||
+    host === '::1' ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+};
+
+/**
+ * Checks if a URL is secure (HTTPS or same-origin relative URL) or a local development HTTP origin.
+ * @param {string} [urlString]
+ * @returns {boolean}
+ */
+export const isLocalOrSecureUrl = (urlString) => {
+  if (!urlString || typeof urlString !== 'string') return false;
+  const trimmed = urlString.trim();
+  // Same-origin relative URLs are permitted
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return true;
+  }
+  try {
+    const base = typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'http://localhost';
+    const parsed = new URL(trimmed, base);
+    if (parsed.protocol === 'https:') {
+      return true;
+    }
+    if (parsed.protocol === 'http:') {
+      return isLocalHostname(parsed.hostname);
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Normalizes an API base URL, enforcing HTTPS for non-local remote origins
+ * while preserving local development HTTP origins and relative URLs.
+ * @param {string} [url]
+ * @returns {string}
+ */
 export const normalizeApiUrl = (url) => {
   if (!url || typeof url !== 'string' || !url.trim()) {
     return 'http://localhost:8080/api';
@@ -7,6 +60,16 @@ export const normalizeApiUrl = (url) => {
   let clean = url.trim().replace(/\/+$/, '');
   if (!clean.startsWith('http://') && !clean.startsWith('https://') && !clean.startsWith('/')) {
     clean = `https://${clean}`;
+  }
+  if (clean.startsWith('http://')) {
+    try {
+      const parsed = new URL(clean);
+      if (!isLocalHostname(parsed.hostname)) {
+        clean = clean.replace(/^http:\/\//i, 'https://');
+      }
+    } catch {
+      clean = clean.replace(/^http:\/\//i, 'https://');
+    }
   }
   if (!clean.endsWith('/api')) {
     clean += '/api';
@@ -240,15 +303,40 @@ const isValidUserData = (user) => {
 };
 
 /**
+ * Applies updated profile fields to a user object while guarding against mismatched user IDs across sessions.
+ * @param {any} prevUser - current user state object
+ * @param {any} updatedFields - partial user profile fields to apply
+ * @param {number|string} [expectedUserId] - optional user ID to guard against stale updates across sessions
+ * @returns {any} updated user object, or unmodified prevUser if invalid or ID mismatch
+ */
+export const applyUserUpdate = (prevUser, updatedFields, expectedUserId) => {
+  if (!prevUser) return prevUser;
+  if (!updatedFields || typeof updatedFields !== 'object') return prevUser;
+  if (expectedUserId !== undefined && expectedUserId !== null && String(prevUser.id) !== String(expectedUserId)) {
+    return prevUser;
+  }
+  return { ...prevUser, ...updatedFields };
+};
+
+/**
  * Performs an HTTP fetch request with timeout abort signal, credentials for HttpOnly cookies,
  * centralized CSRF headers, and error handling.
+ * Rejects insecure HTTP requests to non-local origins before dispatching.
  * @param {string} endpoint - API path relative to BASE_URL
- * @param {RequestInit} [options={}] - fetch options (method, body, headers)
+ * @param {RequestInit & { baseUrl?: string }} [options={}] - fetch options (method, body, headers, optional baseUrl)
  * @param {number} [timeoutMs=15000] - request timeout in milliseconds
  * @returns {Promise<unknown>}
  */
-const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+export const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) => {
   const requestGeneration = getSessionGeneration();
+  const { signal: callerSignal, baseUrl, ...fetchOptions } = options;
+  const targetBaseUrl = typeof baseUrl === 'string' ? baseUrl : BASE_URL;
+  const targetUrl = `${targetBaseUrl}${endpoint}`.trim();
+
+  if (!isLocalOrSecureUrl(targetUrl)) {
+    throw new Error('Insecure HTTP request to non-local origin rejected');
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -256,16 +344,24 @@ const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) =
   const method = (options.method || 'GET').toUpperCase();
   const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
   const csrfToken = isMutating ? getCsrfToken() : null;
-  const authToken = safeStorage.getItem('cms_auth_token');
+  const isHttpProtocol = /^http:\/\//i.test(targetUrl);
+  const authToken = isHttpProtocol ? null : safeStorage.getItem('cms_auth_token');
 
   const headers = {
     'Content-Type': 'application/json',
     ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
     ...(csrfToken ? { 'X-XSRF-TOKEN': csrfToken } : {}),
-    ...(options.headers || {})
+    ...(fetchOptions.headers || {})
   };
 
-  const { signal: callerSignal, ...fetchOptions } = options;
+  if (isHttpProtocol) {
+    Object.keys(headers).forEach((key) => {
+      if (key.toLowerCase() === 'authorization') {
+        delete headers[key];
+      }
+    });
+  }
+
   if (callerSignal) {
     if (callerSignal.aborted) {
       controller.abort();
@@ -275,10 +371,11 @@ const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) =
   }
 
   try {
-    const response = await fetch(`${BASE_URL}${endpoint}`, {
+    const response = await fetch(targetUrl, {
       ...fetchOptions,
       headers,
       credentials: 'include',
+      redirect: 'error',
       signal: controller.signal
     });
 
@@ -313,7 +410,15 @@ const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) =
       const errorMessage = (result && typeof result === 'object' && ('message' in result || 'error' in result))
         ? (result.message || result.error)
         : `Request failed with status ${response.status}`;
-      throw new Error(errorMessage);
+      const err = new Error(errorMessage);
+      if (result && typeof result === 'object') {
+        err.status = response.status;
+        err.response = result;
+        if (result.strike !== undefined) err.strike = result.strike;
+        if (result.accountClosed !== undefined) err.accountClosed = Boolean(result.accountClosed);
+        if (result.duplicateNumber !== undefined) err.duplicateNumber = result.duplicateNumber;
+      }
+      throw err;
     }
 
     if (result != null && typeof result !== 'object') {
@@ -347,6 +452,27 @@ const request = async (endpoint, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) =
 };
 
 /**
+ * Executes an authenticated credential mutation (login or register) with serialization and shape validation.
+ * @param {string} endpoint - API path ('/auth/register' or '/auth/login')
+ * @param {RegisterPayload | LoginPayload} data - request body payload
+ * @returns {Promise<ApiResponse<AuthResponseData>>}
+ */
+const mutateAuthEndpoint = (endpoint, data) => serializeAuth(async (signal) => {
+  const result = await request(endpoint, {
+    method: 'POST',
+    body: JSON.stringify(data),
+    signal
+  });
+  if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
+    throw new Error('Invalid response shape from server: missing or invalid user data');
+  }
+  if (result.data?.token) {
+    safeStorage.setItem('cms_auth_token', result.data.token);
+  }
+  return result;
+});
+
+/**
  * API client exposing backend authentication and contact management endpoints.
  */
 export const api = {
@@ -358,20 +484,7 @@ export const api = {
    */
   async register(data) {
     if (!data) throw new Error('Registration data is required');
-    return serializeAuth(async (signal) => {
-      const result = await request('/auth/register', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal
-      });
-      if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
-        throw new Error('Invalid response shape from server: missing or invalid user data');
-      }
-      if (result.data?.token) {
-        safeStorage.setItem('cms_auth_token', result.data.token);
-      }
-      return result;
-    });
+    return mutateAuthEndpoint('/auth/register', data);
   },
 
   /**
@@ -382,20 +495,7 @@ export const api = {
    */
   async login(data) {
     if (!data) throw new Error('Login credentials are required');
-    return serializeAuth(async (signal) => {
-      const result = await request('/auth/login', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        signal
-      });
-      if (!result || typeof result !== 'object' || !isValidUserData(result.data)) {
-        throw new Error('Invalid response shape from server: missing or invalid user data');
-      }
-      if (result.data?.token) {
-        safeStorage.setItem('cms_auth_token', result.data.token);
-      }
-      return result;
-    });
+    return mutateAuthEndpoint('/auth/login', data);
   },
 
   /**
@@ -415,6 +515,7 @@ export const api = {
         }
         return result;
       } finally {
+        safeStorage.removeItem('cms_user');
         safeStorage.removeItem('cms_auth_token');
       }
     });
@@ -450,6 +551,42 @@ export const api = {
       throw new Error('Invalid change password response shape from server');
     }
     return result;
+  },
+
+  /**
+   * Updates or adds the authenticated user's phone number.
+   * @param {{ phone: string }} data - phone update payload
+   * @returns {Promise<UserProfile | null>}
+   */
+  async updatePhone(data) {
+    if (!data || !data.phone) throw new Error('Phone number is required');
+    const result = await request('/auth/phone', {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+    if (!result || typeof result !== 'object' || !result.data || !isValidUserData(result.data)) {
+      throw new Error('Invalid update phone response shape from server');
+    }
+    return result.data;
+  },
+
+  /**
+   * Permanently closes and deletes the authenticated user's account and all contacts.
+   * @returns {Promise<ApiResponse<void>>}
+   */
+  async deleteAccount() {
+    return serializeAuth(async (signal) => {
+      const result = await request('/auth/account', {
+        method: 'DELETE',
+        signal
+      });
+      if (!result || typeof result !== 'object') {
+        throw new Error('Invalid delete account response shape from server');
+      }
+      safeStorage.removeItem('cms_user');
+      safeStorage.removeItem('cms_auth_token');
+      return result;
+    });
   },
 
   /**
@@ -588,6 +725,7 @@ export const api = {
   incrementSessionGeneration,
   resetSessionGeneration,
   getCsrfToken,
-  handleUnauthorized
+  handleUnauthorized,
+  applyUserUpdate
 };
 

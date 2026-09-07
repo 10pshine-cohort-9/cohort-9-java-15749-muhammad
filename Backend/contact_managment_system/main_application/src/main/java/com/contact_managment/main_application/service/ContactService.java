@@ -6,6 +6,7 @@ import com.contact_managment.main_application.entity.ContactEmail;
 import com.contact_managment.main_application.entity.ContactPhone;
 import com.contact_managment.main_application.entity.User;
 import com.contact_managment.main_application.exception.BadRequestException;
+import com.contact_managment.main_application.exception.DuplicatePhoneNumberException;
 import com.contact_managment.main_application.exception.ResourceNotFoundException;
 import com.contact_managment.main_application.repository.ContactRepository;
 import com.contact_managment.main_application.repository.UserRepository;
@@ -28,12 +29,23 @@ import java.util.stream.Stream;
  * Service providing contact CRUD operations, filtered search, pagination, bulk import/export, and user association.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class ContactService {
 
     private final ContactRepository contactRepository;
     private final UserRepository userRepository;
+    private final DuplicatePhonePolicyService duplicatePhonePolicyService;
+
+    public ContactService(ContactRepository contactRepository, UserRepository userRepository) {
+        this(contactRepository, userRepository, new DuplicatePhonePolicyService(userRepository, contactRepository));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ContactService(ContactRepository contactRepository, UserRepository userRepository, DuplicatePhonePolicyService duplicatePhonePolicyService) {
+        this.contactRepository = contactRepository;
+        this.userRepository = userRepository;
+        this.duplicatePhonePolicyService = duplicatePhonePolicyService;
+    }
 
     private static final Set<String> ALLOWED_SORT_FIELDS = Set.of("id", "firstName", "lastName", "title", "createdAt", "updatedAt");
     private static final int MAX_PAGE_SIZE = 100;
@@ -129,13 +141,13 @@ public class ContactService {
      * @param contactDto contact data
      * @return saved contact DTO
      */
-    @Transactional
+    @Transactional(noRollbackFor = DuplicatePhoneNumberException.class)
     public ContactDto createContact(Long userId, ContactDto contactDto) {
         log.info("Creating new contact for user ID: {}", userId);
         if (contactDto == null) {
             throw new BadRequestException("Contact data cannot be null");
         }
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
         return createContactInternal(user, contactDto);
     }
 
@@ -147,6 +159,12 @@ public class ContactService {
      * @return saved contact DTO
      */
     private ContactDto createContactInternal(User user, ContactDto contactDto) {
+        return createContactInternal(user, contactDto, null);
+    }
+
+    private ContactDto createContactInternal(User user, ContactDto contactDto, Set<String> knownPhones) {
+        validatePhoneNumbers(user, contactDto.getPhones(), null, knownPhones);
+
         Contact contact = Contact.builder()
                 .user(user)
                 .firstName(contactDto.getFirstName())
@@ -182,6 +200,10 @@ public class ContactService {
         }
 
         Contact savedContact = contactRepository.save(contact);
+        if (user != null && user.getDuplicateStrikeCount() > 0) {
+            user.setDuplicateStrikeCount(0);
+            userRepository.saveAndFlush(user);
+        }
         log.info("Contact created successfully with ID: {}", savedContact.getId());
         return mapToDto(savedContact);
     }
@@ -195,16 +217,18 @@ public class ContactService {
      * @return updated contact DTO
      * @throws ResourceNotFoundException if the contact is not found
      */
-    @Transactional
+    @Transactional(noRollbackFor = DuplicatePhoneNumberException.class)
     public ContactDto updateContact(Long userId, Long contactId, ContactDto contactDto) {
         log.info("Updating contact ID: {} for user ID: {}", contactId, userId);
         if (contactDto == null) {
             throw new BadRequestException("Contact data cannot be null");
         }
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
 
         Contact contact = contactRepository.findByIdAndUser(contactId, user)
                 .orElseThrow(() -> new ResourceNotFoundException("Contact not found with ID: " + contactId));
+
+        validatePhoneNumbers(user, contactDto.getPhones(), contactId);
 
         contact.setFirstName(contactDto.getFirstName());
         contact.setLastName(contactDto.getLastName());
@@ -244,6 +268,10 @@ public class ContactService {
         }
 
         Contact updatedContact = contactRepository.save(contact);
+        if (user != null && user.getDuplicateStrikeCount() > 0) {
+            user.setDuplicateStrikeCount(0);
+            userRepository.saveAndFlush(user);
+        }
         log.info("Contact ID: {} updated successfully", updatedContact.getId());
         return mapToDto(updatedContact);
     }
@@ -289,13 +317,23 @@ public class ContactService {
      * @param contactDtos list of contact DTOs to import
      * @return total count of imported contacts
      */
-    @Transactional
+    @Transactional(noRollbackFor = DuplicatePhoneNumberException.class)
     public int importContacts(Long userId, List<ContactDto> contactDtos) {
         if (contactDtos == null || contactDtos.isEmpty()) {
             throw new BadRequestException("Contacts list cannot be empty");
         }
         log.info("Importing {} contacts for user ID: {}", contactDtos.size(), userId);
-        User user = getUserById(userId);
+        User user = getUserByIdForUpdate(userId);
+
+        List<String> existing = contactRepository.findPhoneNumbersByUser(user);
+        Set<String> knownPhones = existing.stream()
+                .filter(StringUtils::hasText)
+                .map(this::normalizePhoneNumber)
+                .collect(java.util.stream.Collectors.toSet());
+        if (user != null && StringUtils.hasText(user.getPhone())) {
+            knownPhones.add(normalizePhoneNumber(user.getPhone()));
+        }
+
         int count = 0;
         for (ContactDto dto : contactDtos) {
             if (dto == null) {
@@ -304,7 +342,7 @@ public class ContactService {
             if (!StringUtils.hasText(dto.getFirstName()) || !StringUtils.hasText(dto.getLastName())) {
                 throw new BadRequestException("First name and Last name are required for all imported contacts");
             }
-            createContactInternal(user, dto);
+            createContactInternal(user, dto, knownPhones);
             count++;
         }
         log.info("Successfully imported {} contacts for user ID: {}", count, userId);
@@ -320,6 +358,18 @@ public class ContactService {
      */
     private User getUserById(Long userId) {
         return userRepository.findById(userId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
+    }
+
+    /**
+     * Helper method to lookup a user entity by ID with a pessimistic write lock for write operations.
+     *
+     * @param userId user ID
+     * @return User entity
+     * @throws ResourceNotFoundException if user is not found
+     */
+    private User getUserByIdForUpdate(Long userId) {
+        return userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found with ID: " + userId));
     }
 
@@ -357,5 +407,79 @@ public class ContactService {
                 .createdAt(contact.getCreatedAt())
                 .updatedAt(contact.getUpdatedAt())
                 .build();
+    }
+
+    /**
+     * Validates that phone numbers in the contact payload do not contain duplicates within the payload,
+     * and do not duplicate any phone number belonging to existing contacts of the same user.
+     *
+     * @param user owning user
+     * @param phones list of phone DTOs
+     * @param excludeContactId contact ID to exclude from existing lookup (null for create)
+     */
+    private void validatePhoneNumbers(User user, List<ContactPhoneDto> phones, Long excludeContactId) {
+        validatePhoneNumbers(user, phones, excludeContactId, null);
+    }
+
+    private void validatePhoneNumbers(User user, List<ContactPhoneDto> phones, Long excludeContactId, Set<String> knownPhones) {
+        if (phones == null || phones.isEmpty()) {
+            return;
+        }
+
+        Set<String> seenInPayload = new java.util.HashSet<>();
+        Set<String> normalizedExisting;
+        if (knownPhones != null) {
+            normalizedExisting = knownPhones;
+        } else {
+            List<String> existingPhones = (excludeContactId == null)
+                    ? contactRepository.findPhoneNumbersByUser(user)
+                    : contactRepository.findPhoneNumbersByUserAndContactIdNot(user, excludeContactId);
+            normalizedExisting = existingPhones.stream()
+                    .filter(StringUtils::hasText)
+                    .map(this::normalizePhoneNumber)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            if (user != null && StringUtils.hasText(user.getPhone())) {
+                normalizedExisting.add(normalizePhoneNumber(user.getPhone()));
+            }
+        }
+
+        for (ContactPhoneDto phoneDto : phones) {
+            if (phoneDto == null || !StringUtils.hasText(phoneDto.getPhoneNumber())) {
+                continue;
+            }
+            String rawPhone = phoneDto.getPhoneNumber().trim();
+            String normalized = normalizePhoneNumber(rawPhone);
+            if (normalized.isEmpty()) {
+                continue;
+            }
+
+            if (!seenInPayload.add(normalized)) {
+                handleDuplicateStrikeAndThrow(user, rawPhone);
+            }
+
+            if (normalizedExisting.contains(normalized)) {
+                handleDuplicateStrikeAndThrow(user, rawPhone);
+            }
+        }
+
+        if (knownPhones != null) {
+            knownPhones.addAll(seenInPayload);
+        }
+    }
+
+    /**
+     * Atomically increments the user's duplicate strike count, persists the change,
+     * and either throws a strike-1 warning or terminates the user account on strike 2.
+     *
+     * @param user owning user
+     * @param rawPhone duplicate phone number
+     */
+    private void handleDuplicateStrikeAndThrow(User user, String rawPhone) {
+        duplicatePhonePolicyService.handleDuplicateStrikeAndThrow(user, rawPhone);
+    }
+
+    private String normalizePhoneNumber(String phone) {
+        return duplicatePhonePolicyService.normalizePhoneNumber(phone);
     }
 }
